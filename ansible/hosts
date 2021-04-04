@@ -1,0 +1,11 @@
+[node1]
+192.168.2.11 ansible_host=192.168.2.11 ansible_user=vagrant ansible_ssh_private_key_file=/home/alex/Vagrant/nginx_wp_iscsi_db/.vagrant/machines/node1/virtualbox/private_key
+
+[node2]
+192.168.2.12 ansible_host=192.168.2.12 ansible_user=vagrant ansible_ssh_private_key_file=/home/alex/Vagrant/nginx_wp_iscsi_db/.vagrant/machines/node2/virtualbox/private_key
+
+[iscsi]
+192.168.2.10 ansible_host=192.168.2.10 ansible_user=vagrant ansible_ssh_private_key_file=/home/alex/Vagrant/nginx_wp_iscsi_db/.vagrant/machines/iscsi/virtualbox/private_key
+
+[db1]
+192.168.2.21 ansible_host=192.168.2.21 ansible_user=vagrant ansible_ssh_private_key_file=/home/alex/Vagrant/nginx_wp_iscsi_db/.vagrant/machines/db1/virtualbox/private_key

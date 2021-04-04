@@ -1,0 +1,498 @@
+- name: disable SELinux
+  hosts: all
+  become: yes
+  tasks:
+  - name: copy selinux config
+    copy:
+       src: ../config/config_selinux
+       dest: /etc/selinux/config
+       owner: root
+       group: root
+       mode: 0644
+
+  #- name: setenforce 0
+  #  shell: setenforce 0
+
+  - name: stop and disable firewalld
+    systemd:
+      name: firewalld
+      state: stopped
+      enabled: no
+
+- name: ntp and create iscsi target
+  hosts: iscsi
+  become: yes
+  tasks:
+  - yum: name=cronyd state=absent
+
+  - name: set timezone
+    command: /usr/bin/timedatectl set-timezone Europe/Moscow
+
+  - name: Install NTPD
+    yum: name=ntp state=present
+
+  - name: Ensure NTP is running.
+    service: name=ntpd state=started enabled=yes
+
+  - name: install targetcli
+    yum: name=targetcli state=latest
+
+  - name: create fileIO for iscsi target
+    shell: targetcli /backstores/fileio create name=disk01 file_or_dev=/mnt/disk01 size=5G
+   
+  - name: chmod for disk01
+    shell: chmod 777 /mnt/disk01
+    
+  - name: create IQN
+    shell: targetcli /iscsi create iqn.2021-02.ru.otus:target00
+
+  - name: create and setting iscsi target
+    shell: targetcli /iscsi/iqn.2021-02.ru.otus:target00/tpg1/luns create /backstores/fileio/disk01
+
+
+- name: ntp and create iscsi initiator
+  hosts: node1,node2
+  become: yes
+  tasks:
+  - yum: name=cronyd state=absent
+
+  - name: set timezone
+    command: /usr/bin/timedatectl set-timezone Europe/Moscow
+
+  - name: Install NTPD
+    yum: 
+      name: ntp
+      state: present
+
+  - name: Ensure NTP is running.
+    service: name=ntpd state=started enabled=yes
+
+  - name: install iscsi-initiator-utils
+    yum: name=iscsi-initiator-utils state=latest
+
+  - name: chmod /etc/iscsi/initiatorname.iscsi
+    shell: /usr/bin/sudo chmod 777 /etc/iscsi/initiatorname.iscsi
+
+- name: node1 initiator
+  hosts: node1
+  become: yes
+  tasks:
+  - name: edit IQN iscsi initiator
+    shell: /usr/bin/sudo echo -e "InitiatorName=iqn.2021-02.com.redhat:node1" > /etc/iscsi/initiatorname.iscsi
+
+  - name: Check 1 path for iscsi
+    command: /usr/sbin/iscsiadm -m discovery -t st -p 192.168.2.10
+
+  - name: Check 2 path for iscsi
+    command: /usr/sbin/iscsiadm -m discovery -t st -p 192.168.3.10
+
+  - name: Check 1 and 2 path for iscsi
+    command: /usr/sbin/iscsiadm -m node
+
+- name: node2 initiator
+  hosts: node2
+  become: yes
+  tasks:
+  - name: edit IQN iscsi initiator
+    shell: /usr/bin/sudo echo -e "InitiatorName=iqn.2021-02.com.redhat:node2" > /etc/iscsi/initiatorname.iscsi
+
+  - name: Check 1 path for iscsi
+    command: /usr/sbin/iscsiadm -m discovery -t st -p 192.168.2.10
+
+  - name: Check 2 path for iscsi
+    command: /usr/sbin/iscsiadm -m discovery -t st -p 192.168.3.10
+
+  - name: Check 1 and 2 path for iscsi
+    command: /usr/sbin/iscsiadm -m node
+
+
+- name: Acls on iscsi target
+  hosts: iscsi
+  become: yes
+  tasks:
+  - name: allow iqn iqn.2021-02.com.redhat:node1
+    command: sudo targetcli iscsi/iqn.2021-02.ru.otus:target00/tpg1/acls/ create iqn.2021-02.com.redhat:node1
+
+  - name: allow iqn iqn.2021-02.com.redhat:node2
+    command: sudo targetcli iscsi/iqn.2021-02.ru.otus:target00/tpg1/acls/ create iqn.2021-02.com.redhat:node2
+
+
+- name: connect to iscsi target and setting pacemaker cluster
+  hosts: node1,node2
+  become: yes
+  tasks:
+
+  - name: connect to iscsi target
+    command: /usr/sbin/iscsiadm -m node -l -T iqn.2021-02.ru.otus:target00
+
+  - name: install multipath
+    yum: name=device-mapper-multipath state=present
+
+  - name: Ensure NTP is running.
+    service: name=multipathd state=started enabled=yes
+
+  - name: start multipath
+    become: yes
+    command: /usr/sbin/mpathconf --enable --with_multipathd y
+
+  - name: edit permissions to /etc/hosts
+    shell: rm -f /etc/hosts
+
+  - name: edit to /etc/hosts
+    copy:
+       src: ../config/hosts
+       dest: /etc/hosts
+       owner: root
+       group: root
+       mode: 0644
+
+  - name: Install pacemaker pcs fence-agents-all
+    yum: 
+      name:
+        - pacemaker
+        - pcs
+        - python3
+      state: present
+
+  - name: Ensure pcsd.service is running.
+    service: name=pcsd state=started enabled=yes
+  
+  - name: Change password for user hacluster
+    user:
+      name: hacluster
+      password: "{{ 'haclusterpass' | password_hash('sha512') }}"
+      update_password: always
+    become: yes
+
+  - name: auth cluster node
+    command: pcs cluster auth node1 node2 -u hacluster -p haclusterpass
+
+  - name: create hacluster
+    command: pcs cluster setup --name hacluster node1 node2 --force
+
+  - name: enable cluster
+    command: pcs cluster enable --all
+
+  - name: start cluster
+    shell: sudo pcs cluster start --all
+
+  - name: Install gfs2-utils lvm2-cluster
+    yum: 
+      name:
+        - gfs2-utils
+        - lvm2-cluster
+      state: present
+
+  - name: Enable clustered locking for LVM
+    shell: lvmconf --enable-cluster
+
+  - name: reboot nodes
+    reboot:
+
+  - name: edit permissions to /etc/hosts
+    shell: /usr/bin/chmod 777 /etc/hosts
+
+  - name: start cluster
+    command: pcs cluster start --all
+
+- name: GFS2
+  hosts: node1
+  become: yes
+  tasks:
+  - name: Create DLM and CLVM
+    shell: |
+      pcs property set stonith-enabled=false
+      pcs property set no-quorum-policy=ignore
+      pcs resource create dlm systemd:dlm op monitor interval=30s on-fail=ignore clone interleave=true ordered=true
+      pcs resource create clvmd ocf:heartbeat:clvm op monitor interval=30s on-fail=ignore clone interleave=true ordered=true
+      pcs constraint order start dlm-clone then clvmd-clone
+  
+  - name: Create FS
+    shell: pvcreate /dev/mapper/mpatha
+
+  - name: vgcreate
+    shell: vgcreate -Ay -cy cluster_vg /dev/mapper/mpatha
+
+  - name: sleep 
+    command: sleep 20
+    
+  - name: lvcreate
+    become: yes
+    command: sudo lvcreate -L4500M -n cluster_lv cluster_vg
+
+  - name: mkfs.gfs2
+    become: yes
+    shell: sudo echo y | sudo mkfs.gfs2 -j3 -p lock_dlm -t hacluster:gfs2 /dev/cluster_vg/cluster_lv
+  
+  - name: create clusterfs
+    become: yes
+    shell: sudo pcs resource create clusterfs Filesystem device="/dev/cluster_vg/cluster_lv" directory="/mnt/gfs2" fstype="gfs2" "options=noatime" op monitor interval=10s on-fail=ignore clone interleave=true
+
+  - name: constraint order
+    shell: pcs constraint order start clvmd-clone then clusterfs-clone
+
+  - name: colocation
+    shell: pcs constraint colocation add clusterfs-clone with clvmd-clone
+
+- name: install keepalived on node1-2
+  hosts: node1,node2
+  become: yes
+  tasks:
+  - name: install keepalived
+    yum:
+      name:
+        - keepalived
+      state: latest
+
+  - name: enable keepalived
+    service: 
+      name: keepalived
+      state: started 
+      enabled: yes
+
+  - name: Kernel on parameter for keepalived
+    shell: sysctl net.ipv4.ip_nonlocal_bind=1
+
+
+- name: configure keepalived on node1
+  hosts: node1
+  become: yes
+  tasks:
+  - name: copy keep_node1
+    copy:
+       src: ../config/keep_node1
+       dest: /etc/keepalived/keepalived.conf
+       owner: root
+       group: root
+       mode: 0644
+
+  - name: restart keepalived
+    shell: systemctl restart keepalived
+
+- name: configure keepalived on node2
+  hosts: node2
+  become: yes
+  tasks:
+  - name: copy keep_node1
+    copy:
+       src: ../config/keep_node2
+       dest: /etc/keepalived/keepalived.conf
+       owner: root
+       group: root
+       mode: 0644
+  - name: restart keepalived
+    shell: systemctl restart keepalived
+
+- name: setup db server
+  hosts: db1
+  become: yes
+  tasks:
+  - name: copy MariaDB.repo
+    copy: 
+      src: ../config/mariadb.repo
+      dest: /etc/yum.repos.d/Mariadb.repo
+      owner: root
+      group: root
+      mode: 0644
+  
+  - name: install mariadb
+    yum:
+      name:
+        - MariaDB-server
+        - MariaDB-client
+      state: latest
+      
+  - name: restart mariadb
+    systemd:
+      state: restarted
+      daemon_reload: yes
+      name: mariadb
+      enabled: yes
+
+  - name: mysql_secure_installation
+    shell: echo -e "\ny \notus \notus \ny \nn \ny \ny" | sudo mysql_secure_installation 
+  
+  - name: create Wordpress database
+    shell: sudo mysql -u root --password=otus -e "CREATE DATABASE wordpress;"
+
+  - name: create db user
+    shell: sudo mysql -u root --password=otus -e "CREATE USER 'wordpressuser'@'localhost' IDENTIFIED BY 'otus';"
+
+  - name: Crant privileges for local user
+    shell: sudo mysql -u root --password=otus -e "GRANT ALL ON wordpress.* TO 'wordpressuser'@'localhost' IDENTIFIED BY 'otus' WITH GRANT OPTION;"
+
+  - name: Crant privileges for external user
+    shell: sudo mysql -u root --password=otus -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpressuser'@'%' IDENTIFIED BY 'otus';"
+
+  - name: flush privileges
+    shell: sudo mysql -u root --password=otus -e "FLUSH PRIVILEGES;"
+    
+  - name: allow connection from 0.0.0.0
+    shell: sudo sed -i "s/#bind-address=0.0.0.0/bind-address=0.0.0.0/" /etc/my.cnf.d/server.cnf
+
+  - name: restart mysql
+    systemd:
+      state: restarted
+      daemon_reload: yes
+      name: mysql
+
+- name: install php, nginx
+  hosts: node1,node2
+  become: yes
+  tasks:
+  - name: install epel-release, yum-utils
+    yum:
+      name:
+        - epel-release
+        - yum-utils
+        - http://rpms.remirepo.net/enterprise/remi-release-7.rpm
+      state: latest
+
+  - name: install nginx, wget
+    yum: 
+      name:
+        - nginx
+        - wget
+      state: latest
+
+  - name: enable and stop nginx
+    systemd:
+      state: stopped
+      enabled: yes
+      name: nginx
+      
+  #- name: Create a cache-dir
+   # file:
+   #   path: "{{ fcgi_path }}"
+   #   state: directory
+   #   owner: nginx
+   #   group: nginx
+   #   mode: 0775
+
+  - name: Create a www-dir
+    file:
+      path: /mnt/gfs2/WP/wordpress
+      state: directory
+      owner: nginx
+      group: nginx
+      mode: 0775
+
+  - name: configure nginx
+    copy:
+       src: ../config/wordpress_highload.conf
+       dest: /etc/nginx/conf.d/wordpress.conf
+       owner: root
+       group: root
+       mode: 0644
+
+  - name: enable remi-php7.2
+    shell: yum-config-manager --enable remi-php72 
+
+  - name: sleep 20
+    shell: sleep 20
+
+  - name: install php-fpm
+    shell: yum install -y php72 php72-php-fpm php72-php-mysqlnd php72-php-opcache php72-php-xml php72-php-xmlrpc php72-php-gd php72-php-mbstring php72-php-json php72-php-zip php72-php-xml
+    #yum:
+    #  name:
+    #    - php72
+    #    - php72-php-fpm
+    #    - php72-php-mysqlnd
+    #    - php72-php-opcache
+    #    - php72-php-xml
+    #    - php72-php-xmlrpc
+    #    - php72-php-gd
+    #    - php72-php-mbstring
+    #    - php72-php-json
+    #    - php72-php-zip
+    #    - php72-php-xml
+    #  state: latest
+
+  - name: enable and start php-fpm
+    systemd:
+      state: started
+      enabled: yes
+      name: php72-php-fpm
+      
+  - name: delete /etc/opt/remi/php72/php.ini
+    shell: rm -f /etc/opt/remi/php72/php.ini
+    
+  - name: copy php.ini
+    copy:
+       src: ../config/php.ini
+       dest: /etc/opt/remi/php72/php.ini
+       owner: root
+       group: root
+       mode: 0644
+    
+  - name: move /etc/opt/remi/php72/php-fpm.d/www.{conf,conf.orig}
+    shell: sudo mv /etc/opt/remi/php72/php-fpm.d/www.{conf,conf.orig}
+
+  - name: copy www.conf
+    copy:
+       src: ../config/www.conf
+       dest:  /etc/opt/remi/php72/php-fpm.d/www.conf
+       owner: root
+       group: root
+       mode: 0644
+
+  - name: restart php-fpm
+    systemd:
+      state: restarted
+      daemon_reload: yes
+      name: php72-php-fpm
+
+- name: install wordpress
+  hosts: node1
+  become: yes
+  tasks:      
+  #- name: mkdir /var/www/wordpress
+  #  shell: mkdir /var/www/wordpress
+    
+  - name: download wordpress and tar to /mnt/gfs2/WP/wordpress
+    shell: wget -q -O - http://wordpress.org/latest.tar.gz | sudo tar -xzf - --strip 1 -C /mnt/gfs2/WP/wordpress
+
+  - name: chown /mnt/gfs2/WP/wordpress
+    shell: chown nginx:nginx -R /mnt/gfs2/WP/wordpress
+
+  - name: chmod /mnt/gfs2/WP/wordpress
+    shell: sudo chmod -R 755 /mnt/gfs2/WP/wordpress
+
+  - name: Set the correct permissions on Wordpress directories
+    shell: find /mnt/gfs2/WP/wordpress/ -type d -exec chmod 750 {} \;
+  
+  - name: chmod wordpress files
+    shell: find  /mnt/gfs2/WP/wordpress -type f -print0|xargs -0 chmod 644
+
+  - name: configure wordpress
+    copy:
+       src: ../config/wp-config.php
+       dest: /mnt/gfs2/WP/wordpress/wp-config.php
+       owner: root
+       group: root
+       mode: 0644
+
+- name: restart nginx
+  hosts: node1,node2
+  become: yes
+  tasks:
+  - name: restart nginx
+    systemd:
+      state: restarted
+      daemon_reload: yes
+      name: nginx
+
+- name: Create resources
+  hosts: node1
+  become: yes
+  tasks: 
+  - name: tune cluster
+    shell: |
+      pcs resource create webserver ocf:heartbeat:nginx op monitor timeout="5s" interval="5s"
+      pcs resource create php72-php-fpm systemd:php72-php-fpm.service op monitor timeout="5s" interval="5s"
+      pcs resource create keepalived systemd:keepalived op monitor timeout="5s" interval="5s"
+      pcs constraint order set clusterfs-clone dlm-clone clvmd-clone keepalived php-fpm72 webserver
+      pcs constraint location php72-php-fpm prefers node1=20 node2=10
+      pcs constraint location webserver prefers node1=20 node2=10
+      pcs constraint location keepalived prefers node1=20 node2=10
+
