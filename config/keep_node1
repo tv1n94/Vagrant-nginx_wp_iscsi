@@ -1,0 +1,20 @@
+vrrp_script chk_haproxy {  
+    #script "killall -0 haproxy"
+    interval 2
+    weight 2
+}
+
+vrrp_instance VI_1 {
+    interface eth1  
+    state MASTER  
+    virtual_router_id 1  
+    priority 101  
+    virtual_ipaddress {
+     192.168.2.100/24 dev eth1 label eth1:0
+  }
+
+authentication {
+    auth_type PASS
+    auth_pass otusQAZ1
+ }
+}
