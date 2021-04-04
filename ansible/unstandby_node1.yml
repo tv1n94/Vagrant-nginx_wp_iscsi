@@ -1,0 +1,6 @@
+- name: failover_node1_to_node2
+  hosts: node1
+  become: yes
+  tasks:
+  - name: pcs failover
+    shell: pcs cluster standby node1
