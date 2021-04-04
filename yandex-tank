@@ -1,0 +1,18 @@
+sudo docker run     -v $(pwd):/var/loadtest -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent     --net host -it direvius/yandex-tank
+
+
+Содержимое файла load.yaml
+phantom:
+  address: 192.168.2.100:8080 # [Target's address]:[target's port]
+  instances: 8
+  ssl: false
+  uris:
+    - /
+  load_profile:
+    load_type: rps # schedule load by defining requests per second
+    schedule: const(2000, 150)
+
+console:
+  enabled: true # enable console output
+telegraf:
+  enabled: false # let's disable telegraf monitoring for the first time
